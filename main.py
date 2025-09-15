@@ -4,15 +4,13 @@ import os
 import socket
 from datetime import datetime
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 from uuid import UUID
 
-from fastapi import FastAPI, HTTPException
-from fastapi import Query, Path
-from typing import Optional
+from fastapi import FastAPI, HTTPException, Query, Path
 
-from models.person import PersonCreate, PersonRead, PersonUpdate
-from models.address import AddressCreate, AddressRead, AddressUpdate
+from models.employee import EmployeeCreate, EmployeeRead, EmployeeUpdate
+from models.company import CompanyCreate, CompanyRead, CompanyUpdate
 from models.health import Health
 
 port = int(os.environ.get("FASTAPIPORT", 8000))
@@ -20,17 +18,17 @@ port = int(os.environ.get("FASTAPIPORT", 8000))
 # -----------------------------------------------------------------------------
 # Fake in-memory "databases"
 # -----------------------------------------------------------------------------
-persons: Dict[UUID, PersonRead] = {}
-addresses: Dict[UUID, AddressRead] = {}
+employees: Dict[UUID, EmployeeRead] = {}
+companies: Dict[UUID, CompanyRead] = {}
 
 app = FastAPI(
-    title="Person/Address API",
-    description="Demo FastAPI app using Pydantic v2 models for Person and Address",
+    title="Employee/Company API",
+    description="Demo FastAPI app using Pydantic v2 models for Employee and Company",
     version="0.1.0",
 )
 
 # -----------------------------------------------------------------------------
-# Address endpoints
+# Company endpoints
 # -----------------------------------------------------------------------------
 
 def make_health(echo: Optional[str], path_echo: Optional[str]=None) -> Health:
@@ -55,109 +53,189 @@ def get_health_with_path(
 ):
     return make_health(echo=echo, path_echo=path_echo)
 
-@app.post("/addresses", response_model=AddressRead, status_code=201)
-def create_address(address: AddressCreate):
-    if address.id in addresses:
-        raise HTTPException(status_code=400, detail="Address with this ID already exists")
-    addresses[address.id] = AddressRead(**address.model_dump())
-    return addresses[address.id]
+@app.post("/companies", response_model=CompanyRead, status_code=201)
+def create_company(company: CompanyCreate):
+    company_read = CompanyRead(**company.model_dump())
+    if company_read.id in companies:
+        raise HTTPException(status_code=400, detail="Company with this ID already exists")
+    companies[company_read.id] = company_read
+    return company_read
 
-@app.get("/addresses", response_model=List[AddressRead])
-def list_addresses(
-    street: Optional[str] = Query(None, description="Filter by street"),
-    city: Optional[str] = Query(None, description="Filter by city"),
-    state: Optional[str] = Query(None, description="Filter by state/region"),
-    postal_code: Optional[str] = Query(None, description="Filter by postal code"),
-    country: Optional[str] = Query(None, description="Filter by country"),
+@app.get("/companies", response_model=List[CompanyRead])
+def list_companies(
+    name: Optional[str] = Query(None, description="Filter by company name"),
+    industry: Optional[str] = Query(None, description="Filter by industry"),
+    size: Optional[str] = Query(None, description="Filter by company size"),
 ):
-    results = list(addresses.values())
-
-    if street is not None:
-        results = [a for a in results if a.street == street]
-    if city is not None:
-        results = [a for a in results if a.city == city]
-    if state is not None:
-        results = [a for a in results if a.state == state]
-    if postal_code is not None:
-        results = [a for a in results if a.postal_code == postal_code]
-    if country is not None:
-        results = [a for a in results if a.country == country]
-
+    results = list(companies.values())
+    if name is not None:
+        results = [c for c in results if c.name == name]
+    if industry is not None:
+        results = [c for c in results if c.industry == industry]
+    if size is not None:
+        results = [c for c in results if c.size == size]
     return results
 
-@app.get("/addresses/{address_id}", response_model=AddressRead)
-def get_address(address_id: UUID):
-    if address_id not in addresses:
-        raise HTTPException(status_code=404, detail="Address not found")
-    return addresses[address_id]
+@app.get("/companies/{company_id}", response_model=CompanyRead)
+def get_company(company_id: UUID):
+    if company_id not in companies:
+        raise HTTPException(status_code=404, detail="Company not found")
+    return companies[company_id]
 
-@app.patch("/addresses/{address_id}", response_model=AddressRead)
-def update_address(address_id: UUID, update: AddressUpdate):
-    if address_id not in addresses:
-        raise HTTPException(status_code=404, detail="Address not found")
-    stored = addresses[address_id].model_dump()
+@app.patch("/companies/{company_id}", response_model=CompanyRead)
+def update_company(company_id: UUID, update: CompanyUpdate):
+    if company_id not in companies:
+        raise HTTPException(status_code=404, detail="Company not found")
+    stored = companies[company_id].model_dump()
     stored.update(update.model_dump(exclude_unset=True))
-    addresses[address_id] = AddressRead(**stored)
-    return addresses[address_id]
+    companies[company_id] = CompanyRead(**stored)
+    return companies[company_id]
+
+@app.put("/companies/{company_id}", response_model=CompanyRead)
+def replace_company(company_id: UUID, company: CompanyCreate):
+    if company_id not in companies:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    # Ensure the ID from path is used, ignoring any ID in the body if present
+    company_data = company.model_dump()
+    company_data["id"] = company_id
+
+    company_read = CompanyRead(**company_data)
+    companies[company_id] = company_read
+
+    return company_read
+
+@app.delete("/companies/{company_id}", status_code=204)
+def delete_company(company_id: UUID):
+    if company_id not in companies:
+        raise HTTPException(status_code=404, detail="Company not found")
+    # Remove company from any employees' companies list
+    for emp_id, emp in employees.items():
+        updated_companies = [c for c in emp.companies if c.id != company_id]
+        if len(updated_companies) != len(emp.companies):
+            emp_dict = emp.model_dump()
+            emp_dict["companies"] = updated_companies
+            employees[emp_id] = EmployeeRead(**emp_dict)
+    del companies[company_id]
+    return
+
 
 # -----------------------------------------------------------------------------
-# Person endpoints
+# Employee endpoints
 # -----------------------------------------------------------------------------
-@app.post("/persons", response_model=PersonRead, status_code=201)
-def create_person(person: PersonCreate):
-    # Each person gets its own UUID; stored as PersonRead
-    person_read = PersonRead(**person.model_dump())
-    persons[person_read.id] = person_read
-    return person_read
+@app.post("/employees", response_model=EmployeeRead, status_code=201)
+def create_employee(employee: EmployeeCreate):
+    # Validate company_ids exist before creating employee
+    for company_id in employee.company_ids:
+        if company_id not in companies:
+            raise HTTPException(status_code=404, detail=f"Company {company_id} not found")
 
-@app.get("/persons", response_model=List[PersonRead])
-def list_persons(
-    uni: Optional[str] = Query(None, description="Filter by Columbia UNI"),
+    # Prepare list of CompanyRead objects for this employee
+    linked_companies = [companies[cid] for cid in employee.company_ids]
+
+    # Safely get the dict, and remove "companies" if present
+    employee_data = employee.model_dump(exclude={"company_ids"})
+    employee_data.pop("companies", None) 
+
+    employee_read = EmployeeRead(**employee_data, companies=linked_companies)
+
+    if employee_read.id in employees:
+        raise HTTPException(status_code=400, detail="Employee with this ID already exists")
+
+    employees[employee_read.id] = employee_read
+    return employee_read
+
+@app.get("/employees", response_model=List[EmployeeRead])
+def list_employees(
+    employee_id: Optional[str] = Query(None, description="Filter by employee ID"),
     first_name: Optional[str] = Query(None, description="Filter by first name"),
     last_name: Optional[str] = Query(None, description="Filter by last name"),
     email: Optional[str] = Query(None, description="Filter by email"),
     phone: Optional[str] = Query(None, description="Filter by phone number"),
-    birth_date: Optional[str] = Query(None, description="Filter by date of birth (YYYY-MM-DD)"),
-    city: Optional[str] = Query(None, description="Filter by city of at least one address"),
-    country: Optional[str] = Query(None, description="Filter by country of at least one address"),
+    department: Optional[str] = Query(None, description="Filter by department"),
+    team: Optional[str] = Query(None, description="Filter by team"),
+    min_years_of_exp: Optional[int] = Query(None, description="Filter by minimum years of experience"),
+    company_name: Optional[str] = Query(None, description="Filter by company name associated with employee"),
 ):
-    results = list(persons.values())
+    results = list(employees.values())
 
-    if uni is not None:
-        results = [p for p in results if p.uni == uni]
+    if employee_id is not None:
+        results = [e for e in results if e.employee_id == employee_id]
     if first_name is not None:
-        results = [p for p in results if p.first_name == first_name]
+        results = [e for e in results if e.first_name == first_name]
     if last_name is not None:
-        results = [p for p in results if p.last_name == last_name]
+        results = [e for e in results if e.last_name == last_name]
     if email is not None:
-        results = [p for p in results if p.email == email]
+        results = [e for e in results if e.email == email]
     if phone is not None:
-        results = [p for p in results if p.phone == phone]
-    if birth_date is not None:
-        results = [p for p in results if str(p.birth_date) == birth_date]
-
-    # nested address filtering
-    if city is not None:
-        results = [p for p in results if any(addr.city == city for addr in p.addresses)]
-    if country is not None:
-        results = [p for p in results if any(addr.country == country for addr in p.addresses)]
+        results = [e for e in results if e.phone == phone]
+    if department is not None:
+        results = [e for e in results if e.department == department]
+    if team is not None:
+        results = [e for e in results if e.team == team]
+    if min_years_of_exp is not None:
+        results = [e for e in results if e.yearsofexp >= min_years_of_exp]
+    if company_name is not None:
+        results = [e for e in results if any(c.name == company_name for c in e.companies)]
 
     return results
 
-@app.get("/persons/{person_id}", response_model=PersonRead)
-def get_person(person_id: UUID):
-    if person_id not in persons:
-        raise HTTPException(status_code=404, detail="Person not found")
-    return persons[person_id]
+@app.get("/employees/{employee_id}", response_model=EmployeeRead)
+def get_employee(employee_id: UUID):
+    if employee_id not in employees:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    return employees[employee_id]
 
-@app.patch("/persons/{person_id}", response_model=PersonRead)
-def update_person(person_id: UUID, update: PersonUpdate):
-    if person_id not in persons:
-        raise HTTPException(status_code=404, detail="Person not found")
-    stored = persons[person_id].model_dump()
-    stored.update(update.model_dump(exclude_unset=True))
-    persons[person_id] = PersonRead(**stored)
-    return persons[person_id]
+@app.patch("/employees/{employee_id}", response_model=EmployeeRead)
+def update_employee(employee_id: UUID, update: EmployeeUpdate):
+    if employee_id not in employees:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    stored = employees[employee_id].model_dump()
+
+    update_data = update.model_dump(exclude_unset=True)
+
+    # If company_ids are updated, validate and update linked companies
+    if "company_ids" in update_data:
+        new_company_ids = update_data.pop("company_ids")
+        for cid in new_company_ids:
+            if cid not in companies:
+                raise HTTPException(status_code=404, detail=f"Company {cid} not found")
+        linked_companies = [companies[cid] for cid in new_company_ids]
+        stored["companies"] = linked_companies
+
+    stored.update(update_data)
+    employees[employee_id] = EmployeeRead(**stored)
+    return employees[employee_id]
+
+@app.put("/employees/{employee_id}", response_model=EmployeeRead)
+def replace_employee(employee_id: UUID, employee: EmployeeCreate):
+    if employee_id not in employees:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    for company_id in employee.company_ids:
+        if company_id not in companies:
+            raise HTTPException(status_code=404, detail=f"Company {company_id} not found")
+
+    linked_companies = [companies[cid] for cid in employee.company_ids]
+
+    # Dump data and remove keys that will be passed explicitly
+    employee_data = employee.model_dump(exclude={"company_ids"})
+    employee_data.pop("id", None)         # Remove if it exists
+    employee_data.pop("companies", None)  # Just in case
+
+    # Reconstruct with new id and linked companies
+    employee_read = EmployeeRead(id=employee_id, **employee_data, companies=linked_companies)
+
+    employees[employee_id] = employee_read
+    return employee_read
+
+@app.delete("/employees/{employee_id}", status_code=204)
+def delete_employee(employee_id: UUID):
+    if employee_id not in employees:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    del employees[employee_id]
+    return
 
 # -----------------------------------------------------------------------------
 # Root
